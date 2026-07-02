@@ -402,6 +402,72 @@
     });
     map.addControl(new Legend());
 
+    // --- Locate / follow-me control ---
+    var following = false;
+    var locWatchId = null;
+    var locMarker = null, locCircle = null;
+    var locateBtn = null;
+
+    function setFollow(on) {
+        following = on;
+        if (locateBtn) {
+            locateBtn.style.background = on ? '#2ecc71' : '#fff';
+            locateBtn.style.color = on ? '#fff' : '#333';
+            locateBtn.title = on ? 'Following your location (tap to stop)' : 'Centre on my location';
+        }
+        if (on && locWatchId === null) {
+            if (!navigator.geolocation) {
+                setStatus('No geolocation on this device', true);
+                setTimeout(function() { setStatus(null); }, 5000);
+                following = false;
+                if (locateBtn) { locateBtn.style.background = '#fff'; locateBtn.style.color = '#333'; }
+                return;
+            }
+            locWatchId = navigator.geolocation.watchPosition(onLocation, onLocationError,
+                { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+        }
+    }
+
+    function onLocation(pos) {
+        var ll = [pos.coords.latitude, pos.coords.longitude];
+        if (!locMarker) {
+            locCircle = L.circle(ll, { radius: pos.coords.accuracy, color: '#3498db', weight: 1, fillOpacity: 0.12 }).addTo(map);
+            locMarker = L.circleMarker(ll, { radius: 8, color: '#fff', weight: 2, fillColor: '#3498db', fillOpacity: 1 })
+                .bindPopup('You are here (±' + Math.round(pos.coords.accuracy) + ' m)').addTo(map);
+        } else {
+            locMarker.setLatLng(ll);
+            locCircle.setLatLng(ll).setRadius(pos.coords.accuracy);
+        }
+        if (following) map.setView(ll, Math.max(map.getZoom(), 15));
+    }
+
+    function onLocationError(err) {
+        setStatus('Location: ' + err.message, true);
+        setTimeout(function() { setStatus(null); }, 5000);
+        if (err.code === 1) setFollow(false);   // permission denied
+    }
+
+    // Manual pan pauses following; the blue dot keeps updating.
+    map.on('dragstart', function() { if (following) setFollow(false); });
+
+    var LocateControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd: function() {
+            var btn = L.DomUtil.create('a', 'leaflet-bar leaflet-control');
+            btn.href = '#'; btn.title = 'Centre on my location'; btn.innerHTML = '&#9678;';
+            btn.style.cssText = 'background:#fff;width:30px;height:30px;line-height:30px;text-align:center;font-size:18px;color:#333;text-decoration:none;';
+            locateBtn = btn;
+            L.DomEvent.on(btn, 'click', function(e) {
+                L.DomEvent.preventDefault(e);
+                L.DomEvent.stopPropagation(e);
+                setFollow(!following);
+                if (following && locMarker) map.setView(locMarker.getLatLng(), Math.max(map.getZoom(), 15));
+            });
+            return btn;
+        }
+    });
+    map.addControl(new LocateControl());
+
     // Fullscreen
     var FullscreenControl = L.Control.extend({
         options: { position: 'topleft' },
