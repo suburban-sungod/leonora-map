@@ -259,6 +259,23 @@
             endFetch();
         }).catch(function(e) { console.warn('WA structures load failed', e); endFetch(); });
 
+        // Optional per-site Trove articles, keyed by Minedex site_code (site_articles.json).
+        var SITE_ARTICLES = {};
+        fetch('site_articles.json').then(function(r) { return r.ok ? r.json() : {}; })
+            .then(function(d) { SITE_ARTICLES = d || {}; }).catch(function() {});
+
+        function siteHistoryHtml(siteCode) {
+            var entry = SITE_ARTICLES[siteCode];
+            if (!entry || !entry.articles || !entry.articles.length) return '';
+            var html = '<br><b style="display:block;margin-top:4px;">In the old papers</b>';
+            entry.articles.forEach(function(a) {
+                html += '<a href="' + a.url + '" target="_blank">' +
+                    (a.heading || 'Article').replace(/</g, '&lt;') + '</a>' +
+                    ' <span class="cite">' + (a.paper || '') + ', ' + (a.date || '') + '</span><br>';
+            });
+            return html;
+        }
+
         startFetch('Minedex sites');
         fetch(slipQueryUrl('Industry_and_Mining/MapServer/0')).then(function(r) { return r.json(); }).then(function(data) {
             L.geoJSON(data, {
@@ -272,15 +289,17 @@
                 },
                 onEachFeature: function(feature, layer) {
                     var p = feature.properties || {};
-                    layer.bindPopup(
-                        '<b>' + (p.site_title || p.short_name || 'Unnamed site') + '</b>' +
-                        '<br>Type: ' + (p.site_type_ || '-') + ' / ' + (p.site_sub_t || '-') +
-                        '<br>Stage: ' + (p.site_stage || '-') +
-                        '<br>Commodities: ' + (p.site_commo || '-') +
-                        '<br>Project: ' + (p.proj_title || '-') +
-                        (p.web_link ? '<br><a href="' + p.web_link + '" target="_blank">Minedex record ›</a>' : '') +
-                        '<br><span class="cite">DMIRS Minedex (DMIRS-001)</span>'
-                    );
+                    // Popup built lazily on open so site_articles.json has loaded by then.
+                    layer.bindPopup(function() {
+                        return '<b>' + (p.site_title || p.short_name || 'Unnamed site') + '</b>' +
+                            '<br>Type: ' + (p.site_type_ || '-') + ' / ' + (p.site_sub_t || '-') +
+                            '<br>Stage: ' + (p.site_stage || '-') +
+                            '<br>Commodities: ' + (p.site_commo || '-') +
+                            '<br>Project: ' + (p.proj_title || '-') +
+                            (p.web_link ? '<br><a href="' + p.web_link + '" target="_blank">Minedex record ›</a>' : '') +
+                            siteHistoryHtml(p.site_code) +
+                            '<br><span class="cite">DMIRS Minedex (DMIRS-001)</span>';
+                    }, { maxWidth: 320 });
                 }
             }).addTo(minesLayer);
             endFetch();
