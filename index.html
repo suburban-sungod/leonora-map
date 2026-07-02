@@ -287,6 +287,12 @@
         }).catch(function(e) { console.warn('Minedex load failed', e); endFetch(); });
 
         startFetch('mining tenements');
+        function fmtDate(v) {
+            if (v === null || v === undefined || v === '') return '-';
+            var d = new Date(v);
+            if (isNaN(d.getTime()) || d.getFullYear() > 2500) return '-';   // DMIRS uses year-3000 placeholders
+            return d.toISOString().slice(0, 10);
+        }
         fetch(slipQueryUrl('Industry_and_Mining/MapServer/3')).then(function(r) { return r.json(); }).then(function(data) {
             L.geoJSON(data, {
                 style: { color: '#2980b9', weight: 1.5, fillOpacity: 0.05 },
@@ -297,7 +303,8 @@
                         '<br>Type: ' + (p.type || '-') +
                         '<br>Status: ' + (p.tenstatus || '-') +
                         '<br>Holder: ' + (p.holder1 || '-') +
-                        '<br>Granted: ' + (p.grantdate || '-') + ' — Expires: ' + (p.enddate || '-') +
+                        '<br>Granted: ' + fmtDate(p.grantdate) +
+                        '<br>Expires: ' + fmtDate(p.enddate) +
                         '<br><span class="cite">DMIRS tenements (DMIRS-003). Check 40E permit rules before detecting.</span>'
                     );
                 }
