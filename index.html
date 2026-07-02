@@ -61,16 +61,16 @@
         { attribution: 'Geoscience Australia', maxNativeZoom: 16, maxZoom: 22 }
     );
 
-    // Local LiDAR hillshade — populate lidar_tiles/{z}/{x}/{y}.jpg with make_tiles.py.
+    // 30m Copernicus DEM hillshade (no open LiDAR for Leonora as of 2026-07).
+    // Relief context only — drainage, breakaways, the Gwalia pit. Not shaft-scale.
     var lidarLocal = L.tileLayer('lidar_tiles/{z}/{x}/{y}.jpg', {
-        attribution: 'Local LiDAR hillshade',
-        minZoom: 13, maxNativeZoom: 18, maxZoom: 22,
-        opacity: 1,
+        attribution: 'Copernicus GLO-30 DEM hillshade',
+        minZoom: 10, maxNativeZoom: 14, maxZoom: 22,
+        opacity: 0.55,
         errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
     });
 
     satellite.addTo(map);
-    lidarLocal.addTo(map);
 
     // --- Overlay layers ---
     var minesLayer = L.layerGroup();
@@ -314,7 +314,7 @@
     reefsLayer.addTo(map);
 
     // --- Layer control ---
-    var overlays = { 'LiDAR (local tiles)': lidarLocal };
+    var overlays = { 'Hillshade 30m (Copernicus DEM)': lidarLocal };
     if (STATE === 'VIC') {
         overlays['Surface geology / bedrock (1:100K)'] = geolLayer;
         overlays['Named reefs (gold diamonds)'] = reefsLayer;

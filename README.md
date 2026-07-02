@@ -4,6 +4,6 @@ One-off public deploy of the Leonora–Gwalia gold research map, same UI as [coo
 
 - `index.html` — Leaflet map: Minedex sites, mining tenements, GSWA 1:100K interpreted bedrock, faults/shears. All overlays fetched live from Landgate SLIP public services.
 - `research.html` — Trove newspaper research pane (articles.json).
-- LiDAR tiles not included — no confirmed open capture for this area; satellite imagery base layer carries the load in arid ground.
+- `lidar_tiles/` — 30m Copernicus GLO-30 DEM hillshade (z10-14). No open LiDAR exists for this area (checked ELVIS 2026-07-02); this gives relief context only — drainage, breakaways, the Gwalia pit.
 
 Generated from the gold-research skill template. Source of truth: `~/Documents/Projects/gold-research/leonora/`.
