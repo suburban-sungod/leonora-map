@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5">
+<title>Leonora — gold research</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+    html, body { margin: 0; padding: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    #map { position: absolute; top: 0; bottom: 0; left: 0; right: 0; }
+
+    .reef-icon { background: transparent; border: none; }
+    .reef-diamond { width: 12px; height: 12px; background: #d4a843; transform: rotate(45deg); border: 2px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.5); }
+    .reef-label { position: absolute; left: 14px; top: -2px; white-space: nowrap; font-size: 11px; font-weight: 600; color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 3px #000; pointer-events: none; }
+    .reefs-hide-labels .reef-label { display: none; }
+
+    .map-title { position: absolute; top: 10px; left: 50px; z-index: 600; background: rgba(20,20,20,0.85); color: #fff; padding: 6px 12px; border-radius: 6px; font-size: 14px; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+    .map-title small { font-weight: 400; opacity: 0.75; font-size: 11px; margin-left: 6px; }
+    .map-title a { color: #f5d77a; text-decoration: none; margin-left: 8px; font-size: 11px; font-weight: 500; }
+
+    .legend { background: rgba(255,255,255,0.95); padding: 8px 10px; border-radius: 6px; font-size: 12px; line-height: 1.5; box-shadow: 0 2px 6px rgba(0,0,0,0.3); max-width: 240px; }
+    .legend-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; border: 1px solid #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.4); }
+    .legend h4 { margin: 0 0 4px; font-size: 12px; }
+    .legend-toggle { cursor: pointer; background: rgba(255,255,255,0.95); padding: 6px 10px; border-radius: 6px; font-size: 12px; font-weight: 600; box-shadow: 0 2px 6px rgba(0,0,0,0.3); user-select: none; }
+    .cite { font-size: 10px; color: #888; }
+
+    .status-pill { position: absolute; top: 10px; right: 10px; z-index: 600; background: rgba(255,255,255,0.9); padding: 4px 10px; border-radius: 12px; font-size: 11px; color: #444; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
+    .status-pill.error { background: rgba(231,76,60,0.95); color: #fff; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div class="map-title">Leonora <small>Leonora–Gwalia goldfield · Western Australia</small><a href="research.html">Research notes ›</a></div>
+<div id="status" class="status-pill" style="display:none;"></div>
+
+<script>
+    var AREA_NAME = "Leonora";
+    var STATE = "WA";
+    var CENTRE = [-28.8845, 121.3308];
+    var BBOX = [121.24, -28.99, 121.42, -28.79];   // lon_min, lat_min, lon_max, lat_max
+
+    var map = L.map('map', { center: CENTRE, zoom: 15, maxZoom: 22, zoomControl: true });
+
+    // --- Base layers ---
+    var satellite = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        { attribution: 'Esri World Imagery', maxNativeZoom: 19, maxZoom: 22 }
+    );
+    var topo = L.tileLayer(
+        'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
+        { attribution: 'OpenTopoMap (CC-BY-SA)', maxNativeZoom: 17, maxZoom: 22 }
+    );
+    var ausTopo = L.tileLayer(
+        'https://services.ga.gov.au/gis/rest/services/NationalBaseMap/MapServer/tile/{z}/{y}/{x}',
+        { attribution: 'Geoscience Australia', maxNativeZoom: 16, maxZoom: 22 }
+    );
+
+    // Local LiDAR hillshade — populate lidar_tiles/{z}/{x}/{y}.jpg with make_tiles.py.
+    var lidarLocal = L.tileLayer('lidar_tiles/{z}/{x}/{y}.jpg', {
+        attribution: 'Local LiDAR hillshade',
+        minZoom: 13, maxNativeZoom: 18, maxZoom: 22,
+        opacity: 1,
+        errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    });
+
+    satellite.addTo(map);
+    lidarLocal.addTo(map);
+
+    // --- Overlay layers ---
+    var minesLayer = L.layerGroup();
+    var reefsLayer = L.layerGroup();
+    var geolLayer  = L.layerGroup();
+    var structuresLayer = L.layerGroup();   // WA: faults + shears
+    var tenementsLayer  = L.layerGroup();   // WA: live mining tenements
+
+    var pendingFetches = 0;
+    function setStatus(msg, isError) {
+        var el = document.getElementById('status');
+        if (!msg) { el.style.display = 'none'; return; }
+        el.style.display = 'block'; el.textContent = msg;
+        el.className = 'status-pill' + (isError ? ' error' : '');
+    }
+    function startFetch(label) { pendingFetches++; setStatus('Loading ' + label + '… (' + pendingFetches + ' remaining)'); }
+    function endFetch() { pendingFetches--; if (pendingFetches <= 0) setStatus(null); else setStatus(pendingFetches + ' layer(s) loading…'); }
+
+    function geolColor(p) {
+        var sym = (p.map_symb || '').trim();
+        var age = (p.ageyoung || '').toLowerCase();
+        if (sym.charAt(0) === 'O' || age.indexOf('ordovician') >= 0) return '#7fb069';
+        if (sym.charAt(0) === 'S' || age.indexOf('silurian') >= 0) return '#b9c47a';
+        if (sym.indexOf('-C') === 0 || sym.charAt(0) === 'G' || age.indexOf('cambrian') >= 0) return '#d4a5a5';
+        if (sym.charAt(0) === 'D' || age.indexOf('devonian') >= 0) return '#c19a6b';
+        if (sym.indexOf('-P') === 0 || age.indexOf('eocene') >= 0 || age.indexOf('palaeogene') >= 0) return '#e89c5b';
+        if (sym.charAt(0) === 'N' || age.indexOf('miocene') >= 0 || age.indexOf('neogene') >= 0) return '#ecb377';
+        if (sym.charAt(0) === 'Q' || age.indexOf('quaternary') >= 0) return '#f5e6a8';
+        return '#b0b0b0';
+    }
+
+    if (STATE === 'VIC') {
+        function geovicWfsUrl(typeName) {
+            return 'https://opendata.maps.vic.gov.au/geoserver/wfs' +
+                '?service=WFS&version=2.0.0&request=GetFeature' +
+                '&typeNames=open-data-platform:' + typeName +
+                '&outputFormat=application/json&srsName=EPSG:4326' +
+                '&bbox=' + BBOX.join(',') + ',EPSG:4326';
+        }
+
+        startFetch('bedrock geology');
+        fetch(geovicWfsUrl('geol100_polygon')).then(function(r) { return r.json(); }).then(function(data) {
+            L.geoJSON(data, {
+                style: function(feature) {
+                    return { color: '#333', weight: 0.5, fillColor: geolColor(feature.properties || {}), fillOpacity: 0.45 };
+                },
+                onEachFeature: function(feature, layer) {
+                    var p = feature.properties || {};
+                    layer.bindPopup(
+                        '<b>' + (p.unitname || p.map_symb || 'Rock unit') + '</b>' +
+                        '<br>Map symbol: ' + (p.map_symb || '-') +
+                        '<br>Age: ' + (p.ageyoung || '-') +
+                        ((p.ageold && p.ageold !== p.ageyoung) ? ' to ' + p.ageold : '') +
+                        '<br>Type: ' + (p.unittype || '-') + ' / ' + (p.subtype || '-') +
+                        '<br>Lithology: ' + ((p.lithdesc1 || '') + (p.lithdesc2 || '')).slice(0, 220) +
+                        '<br><span class="cite">Earth Resources Vic 1:100K</span>'
+                    );
+                }
+            }).addTo(geolLayer);
+            endFetch();
+        }).catch(function(e) { console.warn('geol load failed', e); endFetch(); });
+
+        startFetch('mines + reefs');
+        fetch(geovicWfsUrl('minsite')).then(function(r) { return r.json(); }).then(function(data) {
+            L.geoJSON(data, {
+                pointToLayer: function(feature, latlng) {
+                    var p = feature.properties || {};
+                    var dep = (p.dep_ty_gen || '').toLowerCase();
+                    var size = p.size_cat || 'UNKNOWN';
+                    var color = dep === 'primary' ? '#1c1c1c' : dep === 'placer' ? '#c0392b' : '#7f8c8d';
+                    var radius = size === 'MAJOR' ? 8 : size === 'INTERMEDIATE' ? 6 : size === 'MINOR' ? 4.5 : 3;
+                    return L.circleMarker(latlng, { radius: radius, color: '#fff', weight: 1, fillColor: color, fillOpacity: 0.85 });
+                },
+                onEachFeature: function(feature, layer) {
+                    var p = feature.properties || {};
+                    var gold = p.gold_p_gms > 0 ? '<br>Gold produced: ' + Math.round(p.gold_p_gms) + ' g' : '';
+                    layer.bindPopup(
+                        '<b>' + (p.mine_name || 'Unnamed site') + '</b>' +
+                        '<br>Field: ' + (p.field_name || '-').trim() +
+                        '<br>Type: ' + (p.mine_type || '-') +
+                        '<br>Deposit: ' + (p.dep_ty_gen || '-') + ' / ' + (p.dep_ty_sp || '-') +
+                        '<br>Size: ' + (p.size_cat || '-') +
+                        '<br>Method: ' + (p.miningmeth || '-').trim() +
+                        gold + '<br><span class="cite">Earth Resources Vic</span>'
+                    );
+                }
+            }).addTo(minesLayer);
+
+            // Named reefs sublayer
+            var seen = {};
+            var reefFeatures = (data.features || []).filter(function(f) {
+                var n = (f.properties && f.properties.mine_name || '').trim();
+                if (!n || !/reef$/i.test(n)) return false;
+                if (/^unnamed/i.test(n)) return false;
+                if (seen[n.toLowerCase()]) return false;
+                seen[n.toLowerCase()] = true; return true;
+            });
+            reefFeatures.forEach(function(f) {
+                var coords = f.geometry && f.geometry.coordinates;
+                if (!coords) return;
+                var p = f.properties;
+                var icon = L.divIcon({
+                    className: 'reef-icon',
+                    html: '<div class="reef-diamond"></div><div class="reef-label">' + p.mine_name.replace(/</g, '&lt;') + '</div>',
+                    iconSize: null, iconAnchor: [7, 7]
+                });
+                var marker = L.marker([coords[1], coords[0]], { icon: icon, riseOnHover: true });
+                var gold = p.gold_p_gms > 0 ? '<br>Gold produced: ' + Math.round(p.gold_p_gms) + ' g' : '';
+                marker.bindPopup(
+                    '<b>' + p.mine_name + '</b>' +
+                    '<br>Field: ' + (p.field_name || '-').trim() +
+                    '<br>Deposit: ' + (p.dep_ty_gen || '-') + ' / ' + (p.dep_ty_sp || '-') +
+                    '<br>Size: ' + (p.size_cat || '-') +
+                    '<br>Method: ' + (p.miningmeth || '-').trim() + gold +
+                    '<br><span class="cite">Earth Resources Vic</span>'
+                );
+                marker.addTo(reefsLayer);
+            });
+            endFetch();
+        }).catch(function(e) { console.warn('minsite load failed', e); endFetch(); });
+    } else if (STATE === 'WA') {
+        // Landgate SLIP public ArcGIS services (verified 2026-07-02).
+        var SLIP = 'https://services.slip.wa.gov.au/public/rest/services/SLIP_Public_Services/';
+        function slipQueryUrl(servicePath, extra) {
+            var params = {
+                f: 'geojson', where: '1=1',
+                geometry: BBOX.join(','), geometryType: 'esriGeometryEnvelope',
+                inSR: '4326', outSR: '4326', outFields: '*', resultRecordCount: '2000'
+            };
+            for (var k in (extra || {})) params[k] = extra[k];
+            var qs = Object.keys(params).map(function(k) { return k + '=' + encodeURIComponent(params[k]); }).join('&');
+            return SLIP + servicePath + '/query?' + qs;
+        }
+
+        function waGeolColor(p) {
+            var lith = ((p.rocktype1 || '') + ' ' + (p.lithname1 || '') + ' ' + (p.descriptn || '')).toLowerCase();
+            if (/ultramafic|komatiite|serpentinite|peridotite/.test(lith)) return '#3e6b4f';
+            if (/mafic|basalt|dolerite|gabbro|amphibolite|greenstone/.test(lith)) return '#7fb069';
+            if (/banded iron|bif|chert|jaspilite/.test(lith)) return '#a0522d';
+            if (/granit|monzo|syenite|tonalite|gneiss|pegmatite/.test(lith)) return '#e8b4b8';
+            if (/sandstone|siltstone|shale|conglomerate|sedimentary|metasedimentary|quartzite/.test(lith)) return '#c19a6b';
+            if (/alluvium|colluvium|regolith|calcrete|laterite|sand plain|sandplain/.test(lith)) return '#f5e6a8';
+            return '#b0b0b0';
+        }
+
+        startFetch('interpreted bedrock (GSWA 1:100K)');
+        fetch(slipQueryUrl('Geology_and_Soils_Map/MapServer/21')).then(function(r) { return r.json(); }).then(function(data) {
+            L.geoJSON(data, {
+                style: function(feature) {
+                    return { color: '#333', weight: 0.5, fillColor: waGeolColor(feature.properties || {}), fillOpacity: 0.45 };
+                },
+                onEachFeature: function(feature, layer) {
+                    var p = feature.properties || {};
+                    layer.bindPopup(
+                        '<b>' + (p.unitname || p.code || 'Rock unit') + '</b>' +
+                        '<br>Code: ' + (p.code || '-') +
+                        '<br>Lithology: ' + ((p.lithname1 || '-') + (p.lithname2 ? ' / ' + p.lithname2 : '')) +
+                        '<br>Age: ' + (p.agefrom || '-') + ((p.ageto && p.ageto !== p.agefrom) ? ' to ' + p.ageto : '') +
+                        (p.greenstone ? '<br>Greenstone belt: ' + p.greenstone : '') +
+                        '<br>' + ((p.descriptn || '')).slice(0, 220) +
+                        '<br><span class="cite">GSWA 1:100K interpreted bedrock (DMIRS-038)</span>'
+                    );
+                }
+            }).addTo(geolLayer);
+            endFetch();
+        }).catch(function(e) { console.warn('WA bedrock load failed', e); endFetch(); });
+
+        startFetch('linear structures (faults/shears)');
+        fetch(slipQueryUrl('Geology_and_Soils_Map/MapServer/23')).then(function(r) { return r.json(); }).then(function(data) {
+            L.geoJSON(data, {
+                style: function(feature) {
+                    var p = feature.properties || {};
+                    var inferred = /inferred|concealed/i.test((p.type || '') + ' ' + (p.feature || ''));
+                    return { color: '#c0392b', weight: 1.5, dashArray: inferred ? '4 4' : null, opacity: 0.9 };
+                },
+                onEachFeature: function(feature, layer) {
+                    var p = feature.properties || {};
+                    layer.bindPopup(
+                        '<b>' + (p.name || p.feature || 'Structure') + '</b>' +
+                        '<br>Feature: ' + (p.feature || '-') +
+                        '<br>Type: ' + (p.type || '-') +
+                        '<br><span class="cite">GSWA 1:100K linear structures (DMIRS-053)</span>'
+                    );
+                }
+            }).addTo(structuresLayer);
+            endFetch();
+        }).catch(function(e) { console.warn('WA structures load failed', e); endFetch(); });
+
+        startFetch('Minedex sites');
+        fetch(slipQueryUrl('Industry_and_Mining/MapServer/0')).then(function(r) { return r.json(); }).then(function(data) {
+            L.geoJSON(data, {
+                pointToLayer: function(feature, latlng) {
+                    var p = feature.properties || {};
+                    var isGold = (p.target_com || '') === 'GOLD' || /\bAu\b/.test(p.site_commo || '');
+                    var operating = /operating/i.test(p.site_stage || '');
+                    var color = isGold ? (operating ? '#c0392b' : '#1c1c1c') : '#7f8c8d';
+                    var radius = /deposit|mine/i.test(p.site_type_ || '') ? 6 : 4;
+                    return L.circleMarker(latlng, { radius: radius, color: '#fff', weight: 1, fillColor: color, fillOpacity: 0.85 });
+                },
+                onEachFeature: function(feature, layer) {
+                    var p = feature.properties || {};
+                    layer.bindPopup(
+                        '<b>' + (p.site_title || p.short_name || 'Unnamed site') + '</b>' +
+                        '<br>Type: ' + (p.site_type_ || '-') + ' / ' + (p.site_sub_t || '-') +
+                        '<br>Stage: ' + (p.site_stage || '-') +
+                        '<br>Commodities: ' + (p.site_commo || '-') +
+                        '<br>Project: ' + (p.proj_title || '-') +
+                        (p.web_link ? '<br><a href="' + p.web_link + '" target="_blank">Minedex record ›</a>' : '') +
+                        '<br><span class="cite">DMIRS Minedex (DMIRS-001)</span>'
+                    );
+                }
+            }).addTo(minesLayer);
+            endFetch();
+        }).catch(function(e) { console.warn('Minedex load failed', e); endFetch(); });
+
+        startFetch('mining tenements');
+        fetch(slipQueryUrl('Industry_and_Mining/MapServer/3')).then(function(r) { return r.json(); }).then(function(data) {
+            L.geoJSON(data, {
+                style: { color: '#2980b9', weight: 1.5, fillOpacity: 0.05 },
+                onEachFeature: function(feature, layer) {
+                    var p = feature.properties || {};
+                    layer.bindPopup(
+                        '<b>' + (p.fmt_tenid || p.tenid || 'Tenement') + '</b>' +
+                        '<br>Type: ' + (p.type || '-') +
+                        '<br>Status: ' + (p.tenstatus || '-') +
+                        '<br>Holder: ' + (p.holder1 || '-') +
+                        '<br>Granted: ' + (p.grantdate || '-') + ' — Expires: ' + (p.enddate || '-') +
+                        '<br><span class="cite">DMIRS tenements (DMIRS-003). Check 40E permit rules before detecting.</span>'
+                    );
+                }
+            }).addTo(tenementsLayer);
+            endFetch();
+        }).catch(function(e) { console.warn('Tenements load failed', e); endFetch(); });
+    } else {
+        console.warn('Overlays only wired for VIC and WA. State ' + STATE + ' — base layers + LiDAR only.');
+        setStatus('State ' + STATE + ' has no overlays wired yet — base layers + LiDAR only.', false);
+        setTimeout(function() { setStatus(null); }, 6000);
+    }
+
+    minesLayer.addTo(map);
+    reefsLayer.addTo(map);
+
+    // --- Layer control ---
+    var overlays = { 'LiDAR (local tiles)': lidarLocal };
+    if (STATE === 'VIC') {
+        overlays['Surface geology / bedrock (1:100K)'] = geolLayer;
+        overlays['Named reefs (gold diamonds)'] = reefsLayer;
+        overlays['Mine sites'] = minesLayer;
+    } else if (STATE === 'WA') {
+        overlays['Interpreted bedrock (GSWA 1:100K)'] = geolLayer;
+        overlays['Faults + shears (1:100K)'] = structuresLayer;
+        overlays['Minedex sites'] = minesLayer;
+        overlays['Mining tenements'] = tenementsLayer;
+        structuresLayer.addTo(map);
+    }
+    L.control.layers(
+        { 'Satellite (Esri)': satellite, 'Topographic (OpenTopoMap)': topo, 'GA National Map': ausTopo },
+        overlays,
+        { position: 'topright', collapsed: false }
+    ).addTo(map);
+
+    function updateReefLabels() {
+        var c = map.getContainer();
+        if (map.getZoom() < 14) c.classList.add('reefs-hide-labels');
+        else c.classList.remove('reefs-hide-labels');
+    }
+    map.on('zoomend', updateReefLabels); updateReefLabels();
+
+    // Centre pin
+    L.circleMarker(CENTRE, { radius: 7, color: '#fff', weight: 2, fillColor: '#2ecc71', fillOpacity: 1 })
+        .bindPopup('<b>' + AREA_NAME + '</b><br>Default map centre.').addTo(map);
+
+    // --- Collapsible legend ---
+    var legendOpen = true;
+    var legendBody;
+    if (STATE === 'WA') {
+        legendBody =
+        '<h4>Map key</h4>' +
+        '<span class="legend-dot" style="background:#1c1c1c"></span> Gold site (historic/closed)<br>' +
+        '<span class="legend-dot" style="background:#c0392b"></span> Gold site (operating)<br>' +
+        '<span class="legend-dot" style="background:#7f8c8d"></span> Other commodity<br>' +
+        '<span style="display:inline-block;width:14px;height:2px;background:#c0392b;margin-right:4px;vertical-align:middle;"></span> Fault / shear<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;border:1.5px solid #2980b9;margin-right:4px;vertical-align:middle;"></span> Tenement (when on)<br>' +
+        '<b style="display:block;margin-top:6px;">Bedrock (when on)</b>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#7fb069;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Mafic greenstone (gold-bearing)<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#3e6b4f;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Ultramafic<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#a0522d;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> BIF / chert<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#e8b4b8;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Granite / gneiss<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#f5e6a8;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Regolith / cover<br>';
+    } else {
+        legendBody =
+        '<h4>Map key</h4>' +
+        '<span style="display:inline-block;width:10px;height:10px;background:#d4a843;transform:rotate(45deg);border:2px solid #fff;margin-right:6px;vertical-align:middle;box-shadow:0 1px 3px rgba(0,0,0,0.5);"></span> Named reef<br>' +
+        '<span class="legend-dot" style="background:#1c1c1c"></span> Mine — Primary (reef)<br>' +
+        '<span class="legend-dot" style="background:#c0392b"></span> Mine — Placer (alluvial)<br>' +
+        '<span class="legend-dot" style="background:#7f8c8d"></span> Mine — Unknown<br>' +
+        '<b style="display:block;margin-top:6px;">Bedrock (when on)</b>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#7fb069;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Ordovician (gold-bearing)<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#b9c47a;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Silurian<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#d4a5a5;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Cambrian / granite<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#c19a6b;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Devonian<br>' +
+        '<span style="display:inline-block;width:14px;height:8px;background:#f5e6a8;margin-right:4px;vertical-align:middle;border:1px solid #555;"></span> Quaternary cover<br>';
+    }
+
+    var Legend = L.Control.extend({
+        options: { position: 'bottomleft' },
+        onAdd: function() {
+            var wrap = L.DomUtil.create('div');
+            var toggle = L.DomUtil.create('div', 'legend-toggle', wrap);
+            toggle.textContent = 'Map key ▾';
+            var body = L.DomUtil.create('div', 'legend', wrap);
+            body.innerHTML = legendBody;
+            body.style.marginTop = '4px';
+            L.DomEvent.disableClickPropagation(wrap);
+            L.DomEvent.on(toggle, 'click', function() {
+                legendOpen = !legendOpen;
+                body.style.display = legendOpen ? 'block' : 'none';
+                toggle.textContent = 'Map key ' + (legendOpen ? '▾' : '▸');
+            });
+            return wrap;
+        }
+    });
+    map.addControl(new Legend());
+
+    // Fullscreen
+    var FullscreenControl = L.Control.extend({
+        options: { position: 'topleft' },
+        onAdd: function() {
+            var btn = L.DomUtil.create('a', 'leaflet-bar leaflet-control');
+            btn.href = '#'; btn.title = 'Toggle fullscreen'; btn.innerHTML = '⛶';
+            btn.style.cssText = 'background:#fff;width:30px;height:30px;line-height:30px;text-align:center;font-size:18px;color:#333;text-decoration:none;';
+            L.DomEvent.on(btn, 'click', function(e) {
+                L.DomEvent.preventDefault(e);
+                if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+                else document.exitFullscreen();
+            });
+            return btn;
+        }
+    });
+    map.addControl(new FullscreenControl());
+</script>
+</body>
+</html>
